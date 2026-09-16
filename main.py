@@ -63,30 +63,30 @@ def create_fallback_mesh(mesh_type):
         ]
         faces = [[0, 1, 4], [1, 2, 4], [2, 3, 4]]
 
-    # elif mesh_type == "rocha":
-    #     vertices = [
-    #         (-0.8, -0.6, -0.6), (0.8, -0.6, -0.6),
-    #         (0.8, 0.6, -0.6), (-0.8, 0.6, -0.6),
-    #         (-0.7, -0.4, 0.6), (0.7, -0.4, 0.6),
-    #         (0.7, 0.4, 0.6), (-0.7, 0.4, 0.6)
-    #     ]
-    #     faces = [
-    #         [0, 1, 2, 3], [4, 5, 6, 7],
-    #         [0, 1, 5, 4], [2, 3, 7, 6],
-    #         [1, 2, 6, 5], [3, 0, 4, 7]
-    #     ]
+    elif mesh_type == "rocha":
+        vertices = [
+            (-0.8, -0.6, -0.6), (0.8, -0.6, -0.6),
+            (0.8, 0.6, -0.6), (-0.8, 0.6, -0.6),
+            (-0.7, -0.4, 0.6), (0.7, -0.4, 0.6),
+            (0.7, 0.4, 0.6), (-0.7, 0.4, 0.6)
+        ]
+        faces = [
+            [0, 1, 2, 3], [4, 5, 6, 7],
+            [0, 1, 5, 4], [2, 3, 7, 6],
+            [1, 2, 6, 5], [3, 0, 4, 7]
+        ]
 
-    # else:
-    #     # Cristal -> octaedro
-    #     vertices = [
-    #         (0, 1.0, 0), (0, -1.0, 0),
-    #         (1.0, 0, 0), (0, 0, 1.0),
-    #         (-1.0, 0, 0), (0, 0, -1.0)
-    #     ]
-    #     faces = [
-    #         [0, 2, 3], [0, 3, 4], [0, 4, 5], [0, 5, 2],
-    #         [1, 3, 2], [1, 4, 3], [1, 5, 4], [1, 2, 5]
-    #     ]
+    else:
+        # Cristal -> octaedro
+        vertices = [
+            (0, 1.0, 0), (0, -1.0, 0),
+            (1.0, 0, 0), (0, 0, 1.0),
+            (-1.0, 0, 0), (0, 0, -1.0)
+        ]
+        faces = [
+            [0, 2, 3], [0, 3, 4], [0, 4, 5], [0, 5, 2],
+            [1, 3, 2], [1, 4, 3], [1, 5, 4], [1, 2, 5]
+        ]
 
     return vertices, faces
 
@@ -537,12 +537,182 @@ def draw_credits(screen, font, font_small):
 # ============================================================
 # CENÁRIO
 # ============================================================
+
+# Alturas do chão e do teto da caverna. Ficam aqui como
+# constantes porque tanto o cenário (draw_ground/draw_walls)
+# quanto o posicionamento dos objetos (estalagmites, estalactites,
+# a rocha) precisam concordar sobre onde é "o chão" e "o teto".
+FLOOR_Y = -2.5
+CEILING_Y = 4.2
+
+# Posição da câmera do modo "Geral (Visão Ampla)". Fica afastada
+# (Z negativo) e um pouco elevada para enquadrar chão, teto e
+# paredes junto com os objetos — sem isso a câmera fica bem perto
+# das estalagmites/estalactites e a cena parece "flutuando" no
+# vazio, sem noção de estar dentro de uma caverna.
+GENERAL_CAMERA_POS = (0.0, 0.5, -7.0)
+
+# Ângulo de guinada (rotação no eixo Y) que faz o morcego olhar
+# para a ESQUERDA (-X), a direção real do seu voo. O modelo
+# bat_corpo.obj foi feito com o focinho apontando para +Z (eixo
+# de profundidade da câmera) — sem essa rotação ele voa "de lado",
+# de bruços/costas para o movimento, em vez de de frente. Também é
+# usado para pré-rotar a malha das asas (ver bake_mesh_yaw), já
+# que elas giram em torno de um pivô fixo e precisam ser
+# "renascer" já na orientação certa. Se o morcego aparecer olhando
+# para a direita (de costas), troque o sinal: math.pi / 2.
+BAT_FACING_Y = -math.pi / 2
+
+
+def bake_mesh_yaw(vertices, angle):
+    """
+    Aplica uma rotação Y FIXA (guinada) diretamente aos vértices
+    de uma malha, uma única vez, no lugar de fazer isso a cada
+    quadro dentro da rotação da instância.
+
+    Isso é necessário especificamente para as ASAS do morcego:
+    elas giram em torno de um pivô fixo (ombro) para o batimento,
+    e essa rotação de pivô já usa os eixos X/Y/Z do modelo
+    original (asa se abre no eixo local X, bate girando em torno
+    do eixo Z). Se a guinada fosse aplicada JUNTO com o batimento
+    na mesma transformação por quadro, a ordem fixa de rotação
+    (X, depois Y, depois Z) faria a guinada acontecer ANTES do
+    batimento, o que muda qual eixo da asa aponta para os lados —
+    e o batimento (que gira em Z) deixaria de ter efeito visível,
+    porque depois da guinada a asa já não se abre mais no eixo X.
+
+    Pré-rotacionando a malha (e o pivô) uma única vez, a asa já
+    "nasce" na orientação certa, e o batimento por quadro só
+    precisa trocar de qual eixo ele gira (ver onde é usado).
+    """
+    return [rotate_y(v, angle) for v in vertices]
+
+
+
+
+def compute_bounds_y(vertices, faces=None, low_percentile=2, high_percentile=98):
+    """
+    Retorna (min_y, max_y) "robustos" dos vértices LOCAIS de uma
+    malha (antes de qualquer escala/posição). Usado para encaixar
+    um objeto exatamente no chão ou no teto, não importa se a
+    malha é a procedural (fallback) ou um OBJ real carregado do
+    disco — cada arquivo .obj pode ter uma altura bem diferente
+    da outra.
+
+    Duas melhorias em relação a um simples min()/max():
+
+    1. Se `faces` for informado, considera só os vértices
+       realmente usados em alguma face. Alguns exportadores
+       deixam vértices "órfãos" (não usados em nenhuma face) no
+       arquivo .obj, e um min()/max() ingênuo pode acabar pegando
+       um desses pontos soltos, bem longe da malha visível.
+
+    2. Usa um pequeno percentil (2%/98% por padrão) em vez do
+       valor mínimo/máximo absoluto, para que um único vértice
+       isolado (ruído da malha, um pico bem fino etc.) não defina
+       sozinho onde o objeto encosta no chão/teto.
+    """
+    if faces:
+        indices_usados = set()
+
+        for face in faces:
+            indices_usados.update(face)
+
+        ys = [
+            vertices[i][1]
+            for i in indices_usados
+            if 0 <= i < len(vertices)
+        ]
+    else:
+        ys = []
+
+    if not ys:
+        ys = [v[1] for v in vertices]
+
+    ys_ordenados = sorted(ys)
+    n = len(ys_ordenados)
+
+    def percentil(p):
+        idx = int(round((p / 100.0) * (n - 1)))
+        idx = max(0, min(n - 1, idx))
+        return ys_ordenados[idx]
+
+    return percentil(low_percentile), percentil(high_percentile)
+
+
+def anchor_y(target_y, local_anchor_y, scale_y, embed=0.0, teto=False):
+    """
+    Calcula a posição em Y para que o vértice LOCAL local_anchor_y
+    — depois de multiplicado pela escala aplicada (scale_y), que
+    pode ser negativa para inverter a malha de cabeça para baixo —
+    fique exatamente em target_y (mais um pequeno "afundamento"
+    opcional, embed, para dentro da superfície).
+
+    IMPORTANTE: local_anchor_y não é sempre o mínimo nem sempre o
+    máximo da malha — depende de como cada modelo .obj foi
+    modelado. Analisando o Stalagmite_Medium0.obj real (ver
+    profile_obj.py), descobrimos que ele é ESTREITO/pontudo no
+    Y mínimo e LARGO no Y máximo — o oposto da malha de fallback
+    (que é larga embaixo, pontuda em cima). Por isso quem chama
+    esta função precisa escolher, para cada malha, qual extremo
+    (min ou max) representa a ponta "larga" que deve encostar na
+    superfície, e ajustar o sinal de scale_y de acordo.
+
+    O parâmetro `teto` diz se o afundamento (embed) deve empurrar
+    o objeto para CIMA (pendurado no teto) ou para BAIXO (apoiado
+    no chão) — isso não dá pra inferir com segurança a partir do
+    sinal de scale_y, já que malhas diferentes podem precisar de
+    sinais diferentes dependendo de como foram modeladas (foi
+    justamente essa suposição errada que causava o "flutuando").
+
+    Modelos OBJ reais quase nunca têm uma base perfeitamente
+    plana: eles têm reentrâncias e picos irregulares. Se
+    ancorarmos exatamente na superfície, normalmente só uma
+    pontinha da malha toca de verdade, e o resto do volume visível
+    fica com uma folga acima dela — dando a impressão de estar
+    flutuando. Afundar um pouco (embed) garante que a base "grude"
+    visualmente na superfície mesmo com essa irregularidade. Como
+    o objeto é desenhado por cima do chão/teto (nunca o
+    contrário), essa parte afundada fica simplesmente escondida
+    atrás do próprio modelo — não aparece nenhum buraco ou corte
+    estranho.
+    """
+    base = target_y - local_anchor_y * scale_y
+    return base + embed if teto else base - embed
+
+
+
+def draw_hole(screen, camera_pos, x, z, radius, segments=24):
+    """
+    Desenha um buraco escuro (um círculo de pontos no plano do
+    chão, projetado em perspectiva) na posição (x, FLOOR_Y, z).
+    É nele que a rocha rola e cai no fim da animação — fica
+    visível no chão o tempo todo, como uma fenda já existente na
+    caverna, não algo que "aparece do nada" quando a rocha chega.
+    """
+    pontos_mundo = []
+
+    for i in range(segments):
+        ang = (2 * math.pi * i) / segments
+        px = x + math.cos(ang) * radius
+        pz = z + math.sin(ang) * radius
+        pontos_mundo.append((px, FLOOR_Y, pz))
+
+    proj = [project(p, camera_pos) for p in pontos_mundo]
+
+    if all(p is not None for p in proj):
+        pts = [(p[0], p[1]) for p in proj]
+
+        pygame.draw.polygon(screen, (5, 6, 9), pts)
+        pygame.draw.polygon(screen, (2, 2, 4), pts, 2)
+
+
 def draw_ground(screen, camera_pos):
     corners = [
-        (-12.0, -2.5, 3.0),
-        (12.0, -2.5, 3.0),
-        (12.0, -2.5, 30.0),
-        (-12.0, -2.5, 30.0)
+        (-12.0, FLOOR_Y, 3.0),
+        (12.0, FLOOR_Y, 3.0),
+        (12.0, FLOOR_Y, 30.0),
+        (-12.0, FLOOR_Y, 30.0)
     ]
 
     proj = [
@@ -555,24 +725,24 @@ def draw_ground(screen, camera_pos):
 
         pygame.draw.polygon(
             screen,
-            (28, 34, 45),
+            (36, 44, 58),
             pts
         )
 
     for x in range(-10, 11, 2):
         p1 = project(
-            (x, -2.5, 3.0),
+            (x, FLOOR_Y, 3.0),
             camera_pos
         )
         p2 = project(
-            (x, -2.5, 30.0),
+            (x, FLOOR_Y, 30.0),
             camera_pos
         )
 
         if p1 and p2:
             pygame.draw.line(
                 screen,
-                (30, 35, 50),
+                (60, 72, 92),
                 (p1[0], p1[1]),
                 (p2[0], p2[1]),
                 1
@@ -580,18 +750,18 @@ def draw_ground(screen, camera_pos):
 
     for z in range(3, 31, 2):
         p1 = project(
-            (-12.0, -2.5, z),
+            (-12.0, FLOOR_Y, z),
             camera_pos
         )
         p2 = project(
-            (12.0, -2.5, z),
+            (12.0, FLOOR_Y, z),
             camera_pos
         )
 
         if p1 and p2:
             pygame.draw.line(
                 screen,
-                (30, 35, 50),
+                (60, 72, 92),
                 (p1[0], p1[1]),
                 (p2[0], p2[1]),
                 1
@@ -606,16 +776,17 @@ def draw_walls(screen, camera_pos):
     draw_ground.
     """
 
-    y_bottom = -2.5
-    y_top = 4.2
+    y_bottom = FLOOR_Y
+    y_top = CEILING_Y
     x_left = -12.0
     x_right = 12.0
     z_near = 3.0
     z_far = 30.0
 
-    wall_color = (24, 27, 38)
-    ceiling_color = (16, 18, 26)
-    edge_color = (34, 40, 55)
+    wall_color = (30, 34, 48)
+    ceiling_color = (30, 34, 46)
+    ceiling_grid_color = (58, 66, 88)
+    edge_color = (42, 50, 68)
 
     left_wall = [
         (x_left, y_bottom, z_near),
@@ -680,6 +851,27 @@ def draw_walls(screen, camera_pos):
                 screen, edge_color, (p1[0], p1[1]), (p2[0], p2[1]), 1
             )
 
+    # Grid no teto, no mesmo estilo do grid do chão (draw_ground),
+    # para deixar claro onde o teto realmente está e permitir
+    # conferir se as estalactites encostam nele de verdade.
+    for x in range(-10, 11, 2):
+        p1 = project((x, y_top, z_near), camera_pos)
+        p2 = project((x, y_top, z_far), camera_pos)
+
+        if p1 and p2:
+            pygame.draw.line(
+                screen, ceiling_grid_color, (p1[0], p1[1]), (p2[0], p2[1]), 1
+            )
+
+    for z in range(int(z_near), int(z_far) + 1, 2):
+        p1 = project((x_left, y_top, z), camera_pos)
+        p2 = project((x_right, y_top, z), camera_pos)
+
+        if p1 and p2:
+            pygame.draw.line(
+                screen, ceiling_grid_color, (p1[0], p1[1]), (p2[0], p2[1]), 1
+            )
+
 
 def draw_cave(screen):
     w, h = screen.get_size()
@@ -717,8 +909,14 @@ def clamp_scene_positions(
     x_max=11.0,
     z_min=3.5,
     z_max=28.0,
-    y_min=-2.4,
-    y_max=3.5
+    # Os limites de Y precisam sobrar espaço além do chão/teto
+    # reais (FLOOR_Y/CEILING_Y): objetos ancorados no teto ficam
+    # com "pos" perto de CEILING_Y, e um limite mais apertado
+    # (como o antigo y_max=3.5, menor que o teto em 4.2) puxava
+    # a estalactite de volta para baixo, desfazendo o encaixe no
+    # teto e fazendo ela parecer flutuando no vazio.
+    y_min=FLOOR_Y - 0.5,
+    y_max=CEILING_Y + 0.5
 ):
     for inst in instances:
         pos = inst.get("pos")
@@ -774,6 +972,31 @@ def main():
         "rocha"
     )
 
+    # Caixas delimitadoras (só o eixo Y) das malhas, usadas mais
+    # abaixo para encostar cada objeto exatamente no chão ou no
+    # teto, com base no tamanho real do modelo carregado.
+    stalagmite_min_y, stalagmite_max_y = compute_bounds_y(
+        stalagmite_v, stalagmite_f
+    )
+    rock_min_y, rock_max_y = compute_bounds_y(rock_v, rock_f)
+
+    # ---- DIAGNÓSTICO ----
+    # Se algum objeto ainda parecer flutuando depois disso, o
+    # próximo passo é olhar esses números no console (aparecem
+    # assim que o programa inicia) — sem eles, eu só consigo
+    # adivinhar pela captura de tela. É útil copiar e colar essas
+    # linhas de volta na conversa.
+    print(
+        "[DEBUG] Estalagmite/estalactite — extensão local em Y: "
+        f"min={stalagmite_min_y:.3f}  max={stalagmite_max_y:.3f}  "
+        f"altura_bruta={stalagmite_max_y - stalagmite_min_y:.3f}"
+    )
+    print(
+        "[DEBUG] Rocha — extensão local em Y: "
+        f"min={rock_min_y:.3f}  max={rock_max_y:.3f}  "
+        f"altura_bruta={rock_max_y - rock_min_y:.3f}"
+    )
+
     # NOVO: o morcego agora é composto por 3 OBJ.
     bat_corpo_v, bat_corpo_f = load_obj(
         "models/bat_corpo.obj",
@@ -790,6 +1013,13 @@ def main():
         "asa"
     )
 
+    # Pré-rotaciona as asas (malha e pivô) pela mesma guinada
+    # BAT_FACING_Y do corpo — ver docstring de bake_mesh_yaw.
+    bat_asa_esq_v = bake_mesh_yaw(bat_asa_esq_v, BAT_FACING_Y)
+    bat_asa_dir_v = bake_mesh_yaw(bat_asa_dir_v, BAT_FACING_Y)
+    pivot_esq = rotate_y((-0.18, 0.0, 0.0), BAT_FACING_Y)
+    pivot_dir = rotate_y((0.18, 0.0, 0.0), BAT_FACING_Y)
+
     random.seed(1)
 
     # ========================================================
@@ -800,19 +1030,55 @@ def main():
     s2 = random.uniform(0.30, 0.45)
     s3 = random.uniform(0.30, 0.45)
 
+    # Alturas (metade da altura, já escaladas) de cada
+    # estalagmite/estalactite. Usadas para encostar a base de
+    # cada uma exatamente no chão ou no teto, em vez de deixá-las
+    # "flutuando" no meio do ar.
+    # Reduzidas ~35% em relação à versão anterior: com os OBJ
+    # reais, a estalagmite do meio ficava alta demais (quase
+    # encostando no teto).
+    altura1 = 0.22 * s1
+    altura2 = 0.32 * s2
+    altura3 = 0.28 * s3
+
+    # Escala e apoio no chão da rocha, calculados a partir da
+    # caixa delimitadora real do modelo carregado (fallback ou
+    # OBJ), em vez de um valor de Y fixo "chutado" — assim ela
+    # encosta no chão não importa o tamanho do modelo.
+    ROCK_SCALE = 1.2
+    # Margem de "afundamento": empurra o ponto de ancoragem um
+    # pouco além do chão/teto, para compensar bases/topos
+    # irregulares dos modelos OBJ reais (ver docstring de anchor_y).
+    FLOOR_EMBED = 0.15
+    CEILING_EMBED = 0.15
+
+    rock_floor_y = anchor_y(FLOOR_Y, rock_min_y, ROCK_SCALE, embed=0.08)
+    ROCK_RADIUS = max(
+        (rock_max_y - rock_min_y) * ROCK_SCALE / 2.0,
+        0.1
+    )
+
     # O morcego agora possui 3 partes.
     morcego_pos = [0.0, 1.0, 5.0]
 
     instancias = [
         {
+            # Estalagmite: cresce do CHÃO para cima. O
+            # Stalagmite_Medium0.obj real é ESTREITO no Y mínimo e
+            # LARGO no Y máximo (o oposto da malha de fallback) —
+            # analisamos os vértices para confirmar isso. Por isso
+            # usamos escala em Y NEGATIVA (inverte a malha) e
+            # ancoramos pelo stalagmite_max_y (a ponta LARGA), que
+            # assim vira a base apoiada no chão, com a ponta fina
+            # (min local) sobrando pra cima.
             "modelo": "estalagmite",
             "v": stalagmite_v,
             "f": stalagmite_f,
-            "pos": [-4.0, -2.5, 7.0],
+            "pos": [-4.0, anchor_y(FLOOR_Y, stalagmite_max_y, -altura1, embed=FLOOR_EMBED), 7.0],
             "scale": [
-                0.25 * s1,
-                0.35 * s1,
-                0.25 * s1
+                0.18 * s1,
+                -altura1,
+                0.18 * s1
             ],
             "rot": [0, 0.2, 0],
             "color": (110, 110, 120)
@@ -822,25 +1088,32 @@ def main():
             "modelo": "estalagmite",
             "v": stalagmite_v,
             "f": stalagmite_f,
-            "pos": [3.5, -2.5, 8.5],
+            "pos": [3.5, anchor_y(FLOOR_Y, stalagmite_max_y, -altura2, embed=FLOOR_EMBED), 8.5],
             "scale": [
-                0.35 * s2,
-                0.50 * s2,
-                0.35 * s2
+                0.24 * s2,
+                -altura2,
+                0.24 * s2
             ],
             "rot": [0, -0.5, 0],
             "color": (95, 95, 105)
         },
 
         {
-            "modelo": "estalagmite_pai",
+            # Estalactite: pendurada no TETO. Como esse mesmo
+            # modelo já é NATURALMENTE largo no topo (Y máximo) e
+            # estreito embaixo (Y mínimo) — o formato certo pra uma
+            # estalactite (larga onde gruda no teto, afinando até
+            # virar ponta pendurada) — usamos escala em Y POSITIVA
+            # (SEM inverter) e ancoramos pelo mesmo stalagmite_max_y,
+            # que assim vira o topo encostado no teto.
+            "modelo": "estalactite_teto",
             "v": stalagmite_v,
             "f": stalagmite_f,
-            "pos": [-0.5, 2.8, 6.5],
+            "pos": [-0.5, anchor_y(CEILING_Y, stalagmite_max_y, altura3, embed=CEILING_EMBED, teto=True), 6.5],
             "scale": [
-                0.3 * s3,
-                0.4 * s3,
-                0.3 * s3
+                0.22 * s3,
+                altura3,
+                0.22 * s3
             ],
             "rot": [0, 0.8, 0],
             "color": (120, 115, 130)
@@ -850,8 +1123,8 @@ def main():
             "modelo": "rocha",
             "v": rock_v,
             "f": rock_f,
-            "pos": [1.5, -2.2, 5.5],
-            "scale": [1.2, 1.2, 1.2],
+            "pos": [-7.0, rock_floor_y, 4.0],
+            "scale": [ROCK_SCALE, ROCK_SCALE, ROCK_SCALE],
             "rot": [0, 0, 0],
             "color": (100, 85, 75)
         },
@@ -875,7 +1148,7 @@ def main():
             "pos": morcego_pos,
             "scale": [0.8, 0.8, 0.8],
             "rot": [0, 0, 0],
-            "pivot": (-0.18, 0.0, 0.0),
+            "pivot": pivot_esq,
             "color": (65, 50, 80)
         },
 
@@ -887,15 +1160,24 @@ def main():
             "pos": morcego_pos,
             "scale": [0.8, 0.8, 0.8],
             "rot": [0, 0, 0],
-            "pivot": (0.18, 0.0, 0.0),
+            "pivot": pivot_dir,
             "color": (65, 50, 80)
         }
     ]
 
+    print(
+        "[DEBUG] Posições Y finais — "
+        f"estalagmite1={instancias[0]['pos'][1]:.3f}  "
+        f"estalagmite2={instancias[1]['pos'][1]:.3f}  "
+        f"estalactite={instancias[2]['pos'][1]:.3f}  "
+        f"rocha={instancias[3]['pos'][1]:.3f}  "
+        f"(FLOOR_Y={FLOOR_Y}  CEILING_Y={CEILING_Y})"
+    )
+
     clamp_scene_positions(instancias)
 
     cameras = [
-        [0.0, 0.0, 0.0],
+        list(GENERAL_CAMERA_POS),
         [0.0, 0.0, 0.0]
     ]
 
@@ -904,6 +1186,50 @@ def main():
     time_elapsed = 0.0
     wireframe_mode = False
     show_credits = False
+
+    # Parâmetros da rocha rolando: ela sai de rock_start_x,
+    # percorre em linha reta até rock_end_x — bem em cima de um
+    # buraco no chão — desacelerando (ease-out) até parar de vez
+    # aos ROCK_ROLL_DURATION segundos. Depois de parar, ela cai
+    # dentro do buraco (ver ROCK_FALL_*), sumindo de cena antes do
+    # fim da animação.
+    rock_start_x = -7.0
+    rock_end_x = 7.0
+    ROCK_ROLL_DURATION = 6.0
+    # ROCK_RADIUS já foi calculado acima, a partir do modelo real.
+
+    # O buraco fica exatamente onde a rocha para de rolar (mesmo
+    # X/Z), um pouco maior que ela para "engolir" a rocha
+    # visualmente. A queda dura ROCK_FALL_DURATION segundos, com
+    # aceleração tipo gravidade (ease-in): devagar no começo da
+    # queda, acelerando até sumir de vista bem abaixo do chão.
+    #
+    # ROCK_FALL_START é um pouco ANTES de ROCK_ROLL_DURATION, não
+    # igual: a curva de ease-out cúbico do rolamento já deixa a
+    # rocha visualmente parada bem antes do fim "matemático" do
+    # rolamento (a cauda da curva é bem achatada — por volta de
+    # 90% da duração, o movimento restante já é imperceptível).
+    # Se a queda só começasse exatamente em ROCK_ROLL_DURATION,
+    # sobrava uma pausa visível: a rocha parecia já ter parado em
+    # cima do buraco e ficava um tempo ali "esperando" antes de
+    # cair. Começar a queda um pouco antes remove essa espera.
+    HOLE_X = rock_end_x
+    HOLE_Z = 4.0
+    HOLE_RADIUS = ROCK_RADIUS * 1.4
+    ROCK_FALL_START = ROCK_ROLL_DURATION * 0.85
+    ROCK_FALL_DURATION = 2.0
+    ROCK_FALL_DEPTH = 6.0
+
+    # Parâmetros do voo do morcego: sai da direita da tela
+    # (X positivo) e termina à esquerda (X negativo), desacelerando
+    # (ease-out) ao longo de toda a duração da animação, de forma
+    # que ele chegue perto da borda esquerda exatamente quando a
+    # animação está terminando. Percurso um pouco mais curto que
+    # antes (8 em vez de 10) para reforçar a sensação de voo mais
+    # lento — o grosso da desaceleração agora acontece com uma
+    # curva mais suave (ver flight_eased no loop principal).
+    BAT_FLIGHT_START_X = 8.0
+    BAT_FLIGHT_END_X = -8.0
 
     running = True
 
@@ -964,22 +1290,48 @@ def main():
         asa_esquerda = instancias[5]
         asa_direita = instancias[6]
 
-        # Movimento do morcego pela caverna.
+        # Movimento do morcego pela caverna: viagem principal da
+        # DIREITA para a ESQUERDA da tela, com uma curva de
+        # ease-out mais suave — desacelera aos poucos e termina
+        # perto da borda esquerda quando t chega em ANIM_DURATION.
+        # Voo mais LENTO que antes: percurso um pouco mais curto,
+        # curva de aceleração mais suave (quadrática em vez de
+        # cúbica, sem aquele "arranco" inicial rápido) e todas as
+        # oscilações (sobe/desce, balanço lateral, vaivém em
+        # profundidade, batida de asa, giro do corpo) com
+        # frequência menor, para o voo inteiro parecer mais calmo.
+        flight_progress = clamp(t / ANIM_DURATION, 0.0, 1.0)
+        flight_eased = 1 - (1 - flight_progress) ** 2  # ease-out suave
+
+        bat_x_viagem = BAT_FLIGHT_START_X + (
+            (BAT_FLIGHT_END_X - BAT_FLIGHT_START_X) * flight_eased
+        )
+        bat_x_balanco = math.sin(t * 0.9) * 0.8  # leve esq./dir.
+
         nova_pos = [
-            math.sin(t * 1.5) * 2.5,
-            0.8 + math.cos(t * 3.0) * 0.4,
-            5.5 + math.sin(t * 2.0) * 1.0
+            bat_x_viagem + bat_x_balanco,
+            0.8 + math.cos(t * 1.8) * 0.4,
+            5.5 + math.sin(t * 1.2) * 1.0
         ]
 
         morcego_corpo["pos"] = nova_pos
         asa_esquerda["pos"] = nova_pos.copy()
         asa_direita["pos"] = nova_pos.copy()
 
-        # Rotação geral do corpo.
+        # Rotação geral do corpo. BAT_FACING_Y (constante definida
+        # lá em cima, perto de GENERAL_CAMERA_POS) gira o morcego
+        # para que o focinho — que no modelo bat_corpo.obj aponta
+        # para +Z (confirmado analisando a malha: é onde está
+        # concentrada a maior parte dos vértices/detalhes,
+        # indicando a cabeça) — passe a apontar para a ESQUERDA
+        # (-X), a direção real do voo. Antes a rotação Y crescia
+        # sem parar (t * algo), fazendo o morcego girar
+        # continuamente em vez de olhar para onde estava voando
+        # ("voando de lado").
         morcego_corpo["rot"] = (
-            math.sin(t * 3.0) * 0.2,
-            t * 1.5,
-            math.cos(t * 2.0) * 0.15
+            math.sin(t * 1.8) * 0.2,
+            BAT_FACING_Y + math.sin(t * 1.0) * 0.06,
+            math.cos(t * 1.2) * 0.15
         )
 
         # ====================================================
@@ -992,45 +1344,99 @@ def main():
         # esquerda:  +angulo
         # direita:   -angulo
         #
-        # A rotação é aplicada no eixo Z, usando os pivôs
-        # definidos na própria malha.
+        # A rotação é aplicada no eixo X, não mais Z: como a malha
+        # da asa já foi pré-rotacionada pela guinada do morcego
+        # (bake_mesh_yaw, lá no carregamento), o lado que antes
+        # apontava para os lados (eixo X original) agora aponta
+        # para a profundidade (Z). Girar em torno de X é o que
+        # move essa ponta da asa para cima/baixo (eixo Y) — exatamente
+        # o batimento — nessa nova orientação. Girar em Z, como
+        # antes, não teria mais efeito visível algum.
         # ====================================================
 
-        flap_angle = math.sin(t * 6.0) * 0.65
+        flap_angle = math.sin(t * 4.0) * 0.65
 
         asa_esquerda["rot"] = (
+            flap_angle,
             0.0,
-            0.0,
-            flap_angle
+            0.0
         )
 
         asa_direita["rot"] = (
+            -flap_angle,
             0.0,
-            0.0,
-            -flap_angle
+            0.0
         )
 
         # ====================================================
-        # ANIMAÇÃO DA ROCHA
+        # ANIMAÇÃO DA ROCHA (rolando até parar, depois caindo)
+        # ====================================================
+        #
+        # A rocha se desloca em linha reta pelo chão (eixo X) e
+        # gira em torno do eixo Z — eixo perpendicular ao
+        # deslocamento — simulando o rolamento sem deslizar
+        # (ângulo = distância percorrida / raio). Uma curva de
+        # "ease-out" faz o avanço desacelerar suavemente até
+        # parar de vez em ROCK_ROLL_DURATION segundos: como a
+        # rotação depende da mesma distância percorrida, ela
+        # para exatamente junto com a translação, dando a
+        # sensação real de "parou de rolar" em vez de continuar
+        # girando no lugar ou deslizar sem girar.
+        #
+        # O Z fica fixo em 4.0 — bem mais perto da câmera do que
+        # as estalagmites (que estão em z=7.0 e z=8.5) — para que
+        # a rocha role sempre NA FRENTE delas, sem atravessar o
+        # modelo durante o percurso.
+        #
+        # Assim que o rolamento termina, ela cai dentro do buraco
+        # (mesmo X/Z de HOLE_X/HOLE_Z): desce com aceleração tipo
+        # gravidade (ease-in) e ao mesmo tempo encolhe até
+        # desaparecer. O encolhimento é só um truque visual — este
+        # renderizador não tem oclusão de verdade (os objetos são
+        # sempre desenhados por cima do chão, não importa a
+        # profundidade real), então sem encolher a rocha ficaria
+        # visível "flutuando" abaixo do buraco em vez de parecer
+        # que sumiu dentro dele.
         # ====================================================
 
         rocha = instancias[3]
 
-        base_x = 1.5
+        roll_progress = clamp(t / ROCK_ROLL_DURATION, 0.0, 1.0)
+        eased = 1 - (1 - roll_progress) ** 3  # ease-out cúbico
 
-        rocha["pos"][0] = (
-            base_x + math.sin(t * 1.0) * 3.5
+        distancia_percorrida = (rock_end_x - rock_start_x) * eased
+        angulo_rolamento = distancia_percorrida / ROCK_RADIUS
+
+        fall_progress = clamp(
+            (t - ROCK_FALL_START) / ROCK_FALL_DURATION, 0.0, 1.0
         )
+        fall_eased = fall_progress ** 2  # ease-in, tipo gravidade
 
-        rocha["pos"][1] = -2.2
+        rock_y_atual = rock_floor_y - fall_eased * ROCK_FALL_DEPTH
+        rock_scale_atual = ROCK_SCALE * (1.0 - fall_progress)
+
+        rocha["pos"][0] = rock_start_x + distancia_percorrida
+        rocha["pos"][1] = rock_y_atual
+        rocha["pos"][2] = 4.0
+
+        rocha["scale"] = [
+            rock_scale_atual, rock_scale_atual, rock_scale_atual
+        ]
 
         rocha["rot"] = (
-            t * 4.0,
-            0,
-            0
+            fall_progress * 4.0,  # um pequeno tombo enquanto cai
+            0.0,
+            -angulo_rolamento
         )
 
         clamp_scene_positions(instancias)
+
+        # O clamp_scene_positions trava todo objeto numa faixa
+        # "seguraz" perto do chão/teto — ótimo para os outros, mas
+        # durante a queda a rocha PRECISA sair bem abaixo dessa
+        # faixa pra sumir dentro do buraco. Reaplicamos a posição
+        # real por cima do clamp só para a rocha.
+        rocha["pos"][1] = rock_y_atual
 
         # ====================================================
         # CÂMERA
@@ -1053,6 +1459,7 @@ def main():
         draw_cave(screen)
         draw_walls(screen, cam_active)
         draw_ground(screen, cam_active)
+        draw_hole(screen, cam_active, HOLE_X, HOLE_Z, HOLE_RADIUS)
 
         for inst in instancias:
 
